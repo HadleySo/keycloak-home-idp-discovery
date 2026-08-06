@@ -37,46 +37,67 @@ public final class EmailHomeIdpDiscoverer implements HomeIdpDiscoverer {
         LOG.tracef("Trying to discover home IdP for username '%s' in realm '%s' with authenticator config '%s'",
             username, realmName, config.getAlias());
 
-        List<IdentityProviderModel> homeIdps = new ArrayList<>();
-
-        final Optional<Domain> emailDomain;
         UserModel user = users.lookupBy(username);
-        if (user == null) {
-            LOG.tracef("No user found in AuthenticationFlowContext. Extracting domain from provided username '%s'.",
-                username);
-            emailDomain = domainExtractor.extractFrom(username);
-        } else {
-            LOG.tracef("User found in AuthenticationFlowContext. Extracting domain from stored user '%s'.",
-                user.getId());
-            if (EMAIL_ATTRIBUTE.equalsIgnoreCase(config.userAttribute()) && !user.isEmailVerified()
-                && !config.forwardUserWithUnverifiedEmail()) {
-                LOG.warnf("Email address of user '%s' is not verified and forwarding not enabled", user.getId());
-                emailDomain = Optional.empty();
-            } else {
-                emailDomain = domainExtractor.extractFrom(user);
-            }
-        }
+
+        Optional<Domain> emailDomain = extractEmailDomain(user, username, config, domainExtractor);
 
         if (emailDomain.isPresent()) {
             Domain domain = emailDomain.get();
-            homeIdps = discoverHomeIdps(context, domain, user, username);
-            if (homeIdps.isEmpty()) {
-                LOG.infof("Could not find home IdP for domain '%s' and user '%s' in realm '%s'",
-                    domain, username, realmName);
+            List<IdentityProviderModel> homeIdps = discoverHomeIdps(context, domain, user, username);
+
+            if (!homeIdps.isEmpty()) {
+                return homeIdps;
             }
+
+            LOG.infof("Could not find home IdP for domain '%s' and user '%s' in realm '%s'", domain, username, realmName);
         } else {
             LOG.warnf("Could not extract domain from email address '%s'", username);
         }
 
-        if (homeIdps.isEmpty() && user != null) {
-            String attribute = user.getFirstAttribute(config.userAttribute());
-            if (attribute == null || attribute.isBlank()) {
-                homeIdps = discoverHomeIdps(context, user);
-            }
-        }
-        return homeIdps;
+        return discoverUsingUserAttribute(context, user, config);
     }
 
+    private List<IdentityProviderModel> discoverUsingUserAttribute(
+            AuthenticationFlowContext context,
+            UserModel user,
+            EmailHomeIdpDiscovererConfig config) {
+
+        if (user == null) {
+            return Collections.emptyList();
+        }
+
+        String attribute = user.getFirstAttribute(config.userAttribute());
+
+        if (attribute == null || attribute.isBlank()) {
+            return discoverHomeIdps(context, user);
+        }
+
+        return Collections.emptyList();
+    }
+    
+    private Optional<Domain> extractEmailDomain(
+            UserModel user,
+            String username,
+            EmailHomeIdpDiscovererConfig config,
+            DomainExtractor domainExtractor) {
+
+        if (user == null) {
+            LOG.tracef("No user found in AuthenticationFlowContext. Extracting domain from provided username '%s'.",
+                username);
+            return domainExtractor.extractFrom(username);
+        }
+
+        LOG.tracef("User found in AuthenticationFlowContext. Extracting domain from stored user '%s'.",
+            user.getId());
+
+        if (EMAIL_ATTRIBUTE.equalsIgnoreCase(config.userAttribute()) && !user.isEmailVerified()
+                && !config.forwardUserWithUnverifiedEmail()) {
+            LOG.warnf("Email address of user '%s' is not verified and forwarding not enabled", user.getId());
+            return Optional.empty();
+        }
+
+        return domainExtractor.extractFrom(user);
+    }
 
     private List<IdentityProviderModel> discoverHomeIdps(AuthenticationFlowContext context, UserModel user) {
         EmailHomeIdpDiscovererConfig config = new EmailHomeIdpDiscovererConfig(context.getAuthenticatorConfig());
@@ -153,7 +174,7 @@ public final class EmailHomeIdpDiscoverer implements HomeIdpDiscoverer {
                 homeIdps = idpsWithMatchingDomain;
                 logFoundIdps("non-linked", "matching", homeIdps, domain, username);
             } else {
-                logFoundIdps("non-linked", "non-matching", homeIdps, domain, username);
+                logFoundIdps("linked", "non-matching", homeIdps, domain, username);
             }
         } else {
             logFoundIdps("linked", "matching", homeIdps, domain, username);
